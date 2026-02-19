@@ -890,12 +890,25 @@ def print_results(results, packages, ecosystem, filepath, duration=0, quiet=Fals
     print(f"{'=' * 60}")
 
     if vulnerable:
+        # Separate scoped vs unscoped for npm
+        if ecosystem == "npm":
+            scoped = [n for n in vulnerable if n.startswith("@")]
+            unscoped = [n for n in vulnerable if not n.startswith("@")]
+        else:
+            scoped = []
+            unscoped = vulnerable
+
         print(f"\n{C.R}{C.BD}  [!] VULNERABLE — Not found on public registry:{C.X}\n")
         for name in vulnerable:
-            print(f"  {C.R}[!]{C.X} {name} @ {packages.get(name, '?')}")
+            marker = f" {C.Y}(scoped — lower risk){C.X}" if name.startswith("@") and ecosystem == "npm" else ""
+            print(f"  {C.R}[!]{C.X} {name} @ {packages.get(name, '?')}{marker}")
 
-        print(f"\n{C.Y}  An attacker can register these on the public {ecosystem} registry")
-        print(f"  with a higher version → Remote Code Execution!{C.X}")
+        if unscoped:
+            print(f"\n{C.Y}  An attacker can register these on the public {ecosystem} registry")
+            print(f"  with a higher version → Remote Code Execution!{C.X}")
+        if scoped:
+            print(f"\n{C.CN}  Note: {len(scoped)} scoped (@org/) packages found. These require npm org")
+            print(f"  ownership to exploit — lower risk but still worth investigating.{C.X}")
 
         verify = {
             "npm": "curl -s https://registry.npmjs.org/{} | head -1",
@@ -1142,6 +1155,14 @@ try {{
     with open(os.path.join(tmpdir, ".npmrc"), "w") as f:
         f.write(f"//registry.npmjs.org/:_authToken={token}\n")
 
+    # For scoped packages (@scope/name), you must own the scope on npm.
+    # Dependency confusion only works for unscoped packages — skip scoped ones.
+    if pkg_name.startswith("@"):
+        print(f"  {C.Y}[!] Skipping {pkg_name} — scoped packages require org ownership on npm.{C.X}")
+        print(f"  {C.Y}    Dependency confusion via npm publish is not possible for @scoped packages.{C.X}")
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return False
+
     # Publish
     print(f"  {C.CN}[*] Publishing {pkg_name}@{version} to npm...{C.X}")
     result = subprocess.run(
@@ -1156,11 +1177,18 @@ try {{
         print(f"  {C.G}[+] Published: {pkg_name}@{version}{C.X}")
         return True
     else:
-        err = result.stderr.strip()
-        if "already exists" in err.lower() or "403" in err:
-            print(f"  {C.Y}[!] {pkg_name} — name already taken or forbidden{C.X}")
+        # Combine stdout + stderr; filter out npm notice lines to get real error
+        all_output = (result.stderr + "\n" + result.stdout).strip()
+        err_lines = [l for l in all_output.splitlines() if not l.startswith("npm notice") and l.strip()]
+        err = "\n".join(err_lines).strip() or all_output
+        if "already exists" in err.lower() or "EPUBLISHCONFLICT" in err:
+            print(f"  {C.Y}[!] {pkg_name} — name/version already exists{C.X}")
+        elif "403" in err or "forbidden" in err.lower() or "E403" in err:
+            print(f"  {C.Y}[!] {pkg_name} — forbidden (auth issue or name reserved){C.X}")
+        elif "401" in err or "unauthorized" in err.lower() or "E401" in err:
+            print(f"  {C.R}[-] {pkg_name} — unauthorized (check token){C.X}")
         else:
-            print(f"  {C.R}[-] Failed: {err[:200]}{C.X}")
+            print(f"  {C.R}[-] Failed: {err[:500]}{C.X}")
         return False
 
 

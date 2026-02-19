@@ -143,7 +143,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Job not found"}, 404)
                 return
             resp = {"status": job["status"], "id": job_id}
-            if job["status"] == "done":
+            if job["status"] == "done" and "results" in job:
                 r = job["results"]
                 resp.update({
                     "file_type": job.get("file_type", ""),
@@ -155,6 +155,13 @@ class WebHandler(BaseHTTPRequestHandler):
                     "errors": [{"name": n, "error": e} for n, e in r["errors"]],
                     "duration": job.get("duration", 0),
                     "packages": {k: v for k, v in job.get("packages", {}).items()},
+                })
+            elif job["status"] == "done":
+                # Exploit job — no "results" key, return exploit-specific fields
+                resp.update({
+                    "success_count": job.get("success_count", 0),
+                    "total": job.get("total", 0),
+                    "ecosystem": job.get("ecosystem", ""),
                 })
             elif job["status"] == "error":
                 resp["error"] = job.get("error", "Unknown error")
